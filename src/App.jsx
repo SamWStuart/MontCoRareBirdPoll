@@ -594,6 +594,11 @@ function DeckView({ books, index, setIndex, flipped, dragX, onPointerDown, onPoi
                     {book.author}
                   </p>
                 )}
+                {book.photoCredit && (
+                  <p className="text-[#9FB0BE] text-xs mt-0.5" style={{ fontFamily: "Inter, sans-serif" }}>
+                    Photo: {book.photoCredit}
+                  </p>
+                )}
                 <p className="text-[#9FB0BE] text-xs mt-2" style={{ fontFamily: "Inter, sans-serif" }}>
                   Tap to read the sighting details
                 </p>
@@ -634,7 +639,7 @@ function DeckView({ books, index, setIndex, flipped, dragX, onPointerDown, onPoi
         >
           <ChevronLeft className="w-5 h-5" />
         </button>
-        <span className="text-[#6B7C8C] text-xs" style={{ fontFamily: "Inter, sans-serif" }}>
+        <span className="text-[#C9A227] text-sm font-semibold" style={{ fontFamily: "Inter, sans-serif" }}>
           {index + 1} of {books.length}
         </span>
         {atEnd ? (
