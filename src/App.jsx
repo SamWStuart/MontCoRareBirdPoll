@@ -1,0 +1,1013 @@
+import React, { useState, useEffect, useRef } from "react";
+import {
+  collection,
+  doc,
+  addDoc,
+  updateDoc,
+  deleteDoc,
+  setDoc,
+  onSnapshot,
+  query,
+  orderBy,
+  writeBatch,
+  serverTimestamp,
+} from "firebase/firestore";
+import { db } from "./firebase";
+import {
+  Bird,
+  ChevronLeft,
+  ChevronRight,
+  Users,
+  Settings,
+  BarChart3,
+  Trash2,
+  ArrowUp,
+  ArrowDown,
+  ArrowRight,
+  X,
+  Layers,
+  ListChecks,
+  Pencil,
+  Loader2,
+} from "lucide-react";
+
+// Change this before you share the link with whoever manages the sighting list.
+const EDITOR_PASSCODE = "rarebird2026";
+
+const emptyForm = { title: "", author: "", coverUrl: "", synopsis: "", photoCredit: "" };
+
+function getOrCreateVoterId() {
+  let id = localStorage.getItem("voterId");
+  if (!id) {
+    id = crypto.randomUUID();
+    localStorage.setItem("voterId", id);
+  }
+  return id;
+}
+
+// Guards every write so a stalled network request (permissions issue, blocked
+// connection, misconfigured project, etc.) can't leave a button stuck on
+// "Saving…" forever — it surfaces a clear error instead.
+function withTimeout(promise, ms = 15000) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("TIMEOUT")), ms)
+    ),
+  ]);
+}
+
+function describeWriteError(e) {
+  if (e?.message === "TIMEOUT") {
+    return "That's taking too long — check your internet connection and Firebase setup, then try again.";
+  }
+  if (e?.code === "permission-denied") {
+    return "Firestore rejected that write — double-check your security rules are published.";
+  }
+  return "Couldn't save — try again.";
+}
+
+export default function App() {
+  const [voterId] = useState(getOrCreateVoterId);
+  const [booksLoaded, setBooksLoaded] = useState(false);
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const [books, setBooks] = useState([]);
+  const [votes, setVotes] = useState({}); // { voterId: { name, first, second, third, votedAt } }
+
+  const [name, setName] = useState(() => localStorage.getItem("voterName") || "");
+  const [nameInput, setNameInput] = useState("");
+
+  const [isEditor, setIsEditor] = useState(() => localStorage.getItem("isEditor") === "true");
+  const [showGate, setShowGate] = useState(false);
+  const [passInput, setPassInput] = useState("");
+  const [passError, setPassError] = useState("");
+
+  const [view, setView] = useState("deck"); // deck | rank | results | manage
+  const [index, setIndex] = useState(0);
+  const [flipped, setFlipped] = useState({});
+  const [ranking, setRanking] = useState({ first: null, second: null, third: null });
+
+  const [form, setForm] = useState(emptyForm);
+  const [editingId, setEditingId] = useState(null); // sighting id being edited, or null when adding new
+
+  // ---- live subscriptions ----
+  useEffect(() => {
+    const q = query(collection(db, "sightings"), orderBy("order", "asc"));
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        setBooks(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+        setBooksLoaded(true);
+      },
+      (e) => {
+        console.error(e);
+        setError("Couldn't load the sighting list — check your Firebase setup.");
+        setBooksLoaded(true);
+      }
+    );
+    return unsub;
+  }, []);
+
+  useEffect(() => {
+    const unsub = onSnapshot(
+      collection(db, "votes"),
+      (snap) => {
+        const next = {};
+        snap.docs.forEach((d) => (next[d.id] = d.data()));
+        setVotes(next);
+      },
+      (e) => console.error(e)
+    );
+    return unsub;
+  }, []);
+
+  useEffect(() => {
+    if (votes[voterId]) {
+      setRanking({
+        first: votes[voterId].first ?? null,
+        second: votes[voterId].second ?? null,
+        third: votes[voterId].third ?? null,
+      });
+    }
+  }, [voterId, votes]);
+
+  const saveName = (n) => {
+    setName(n);
+    localStorage.setItem("voterName", n);
+  };
+
+  const unlockEditor = () => {
+    if (passInput === EDITOR_PASSCODE) {
+      setIsEditor(true);
+      setShowGate(false);
+      setPassInput("");
+      setPassError("");
+      localStorage.setItem("isEditor", "true");
+    } else {
+      setPassError("That's not it — try again.");
+    }
+  };
+
+  // ---- writes ----
+  const saveBook = async () => {
+    if (!form.title.trim()) return;
+    setSaving(true);
+    try {
+      if (editingId) {
+        await withTimeout(
+          updateDoc(doc(db, "sightings", editingId), {
+            title: form.title.trim(),
+            author: form.author.trim(),
+            coverUrl: form.coverUrl.trim(),
+            synopsis: form.synopsis.trim(),
+            photoCredit: form.photoCredit.trim(),
+          })
+        );
+      } else {
+        const maxOrder = books.reduce((m, b) => Math.max(m, b.order ?? 0), -1);
+        await withTimeout(
+          addDoc(collection(db, "sightings"), {
+            title: form.title.trim(),
+            author: form.author.trim(),
+            coverUrl: form.coverUrl.trim(),
+            synopsis: form.synopsis.trim(),
+            photoCredit: form.photoCredit.trim(),
+            order: maxOrder + 1,
+            createdAt: serverTimestamp(),
+          })
+        );
+      }
+      setForm(emptyForm);
+      setEditingId(null);
+      setError("");
+    } catch (e) {
+      console.error(e);
+      setError(describeWriteError(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const startEdit = (book) => {
+    setEditingId(book.id);
+    setForm({
+      title: book.title || "",
+      author: book.author || "",
+      coverUrl: book.coverUrl || "",
+      synopsis: book.synopsis || "",
+      photoCredit: book.photoCredit || "",
+    });
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setForm(emptyForm);
+  };
+
+  const removeBook = async (id) => {
+    setSaving(true);
+    try {
+      const batch = writeBatch(db);
+      batch.delete(doc(db, "sightings", id));
+      // clear the sighting from anyone's saved ranking
+      Object.entries(votes).forEach(([vId, v]) => {
+        if (v.first === id || v.second === id || v.third === id) {
+          batch.set(
+            doc(db, "votes", vId),
+            {
+              first: v.first === id ? null : v.first,
+              second: v.second === id ? null : v.second,
+              third: v.third === id ? null : v.third,
+            },
+            { merge: true }
+          );
+        }
+      });
+      await withTimeout(batch.commit());
+      setIndex((i) => Math.min(i, Math.max(0, books.length - 2)));
+      if (editingId === id) {
+        setEditingId(null);
+        setForm(emptyForm);
+      }
+      setError("");
+    } catch (e) {
+      console.error(e);
+      setError(describeWriteError(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const moveBook = async (id, dir) => {
+    const i = books.findIndex((b) => b.id === id);
+    const j = dir === "up" ? i - 1 : i + 1;
+    if (j < 0 || j >= books.length) return;
+    setSaving(true);
+    try {
+      const batch = writeBatch(db);
+      batch.update(doc(db, "sightings", books[i].id), { order: books[j].order ?? j });
+      batch.update(doc(db, "sightings", books[j].id), { order: books[i].order ?? i });
+      await withTimeout(batch.commit());
+      setError("");
+    } catch (e) {
+      console.error(e);
+      setError(describeWriteError(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const pickRanking = async (bookId, slot) => {
+    const next = { ...ranking };
+    const slots = ["first", "second", "third"];
+    if (next[slot] === bookId) {
+      next[slot] = null; // tapping your current pick in this slot again clears it
+    } else {
+      // remove this sighting from whichever slot it currently occupies…
+      slots.forEach((s) => {
+        if (next[s] === bookId) next[s] = null;
+      });
+      // …then assign it to the slot that was tapped
+      next[slot] = bookId;
+    }
+    setRanking(next); // instant UI feedback
+    setSaving(true);
+    try {
+      await withTimeout(
+        setDoc(
+          doc(db, "votes", voterId),
+          { name, first: next.first, second: next.second, third: next.third, votedAt: serverTimestamp() },
+          { merge: true }
+        )
+      );
+      setError("");
+    } catch (e) {
+      console.error(e);
+      setError(describeWriteError(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // ---- swipe deck ----
+  const dragState = useRef({ startX: 0, startY: 0, dx: 0, dy: 0, dragging: false });
+  const [dragX, setDragX] = useState(0);
+
+  const onPointerDown = (e) => {
+    dragState.current = { startX: e.clientX, startY: e.clientY, dx: 0, dy: 0, dragging: true };
+  };
+  const onPointerMove = (e) => {
+    if (!dragState.current.dragging) return;
+    const dx = e.clientX - dragState.current.startX;
+    const dy = e.clientY - dragState.current.startY;
+    dragState.current.dx = dx;
+    dragState.current.dy = dy;
+    // Only visually drag the card once the gesture is clearly horizontal —
+    // otherwise scrolling the synopsis text (or anywhere else vertically)
+    // would also nudge the card sideways.
+    if (Math.abs(dx) > Math.abs(dy)) setDragX(dx);
+  };
+  const endDrag = () => {
+    if (!dragState.current.dragging) return;
+    const { dx, dy } = dragState.current;
+    dragState.current.dragging = false;
+    const isVerticalGesture = Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > 10;
+    if (isVerticalGesture) {
+      // A real scroll/vertical drag, however small the horizontal component —
+      // not a tap, not a horizontal swipe, so leave it alone and let the
+      // browser's native scroll of the synopsis text stand.
+    } else if (Math.abs(dx) < 6) {
+      toggleFlip(index);
+    } else if (dx < -60 && index < books.length - 1) {
+      setIndex((i) => i + 1);
+    } else if (dx > 60 && index > 0) {
+      setIndex((i) => i - 1);
+    }
+    setDragX(0);
+  };
+
+  const toggleFlip = (i) => setFlipped((f) => ({ ...f, [i]: !f[i] }));
+
+  const voteCounts = books.reduce((acc, b) => {
+    acc[b.id] = { first: 0, second: 0, third: 0 };
+    return acc;
+  }, {});
+  Object.values(votes).forEach((v) => {
+    if (v.first && voteCounts[v.first]) voteCounts[v.first].first += 1;
+    if (v.second && voteCounts[v.second]) voteCounts[v.second].second += 1;
+    if (v.third && voteCounts[v.third]) voteCounts[v.third].third += 1;
+  });
+  const totalVoters = Object.keys(votes).length;
+  const results = [...books]
+    .map((b) => ({
+      ...b,
+      firstCount: voteCounts[b.id]?.first || 0,
+      secondCount: voteCounts[b.id]?.second || 0,
+      thirdCount: voteCounts[b.id]?.third || 0,
+      points:
+        (voteCounts[b.id]?.first || 0) * 3 + (voteCounts[b.id]?.second || 0) * 2 + (voteCounts[b.id]?.third || 0) * 1,
+    }))
+    .sort((a, b) => b.points - a.points);
+  const maxPoints = Math.max(1, ...results.map((r) => r.points));
+
+  if (!name) {
+    return (
+      <div className="min-h-[100dvh] bg-[#16202B] flex items-center justify-center px-6">
+        <div className="max-w-sm w-full">
+          <div className="flex items-center gap-2 mb-3 justify-center">
+            <Bird className="w-6 h-6 text-[#C9A227]" />
+            <span className="text-[#EDE6D6] text-sm tracking-[0.2em] uppercase" style={{ fontFamily: "Inter, sans-serif" }}>
+              MontCo Birders
+            </span>
+          </div>
+          <h1 className="text-3xl text-center text-[#F6F1E4] mb-6" style={{ fontFamily: "'Fraunces', serif" }}>
+            Who's voting?
+          </h1>
+          <input
+            autoFocus
+            value={nameInput}
+            onChange={(e) => setNameInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && nameInput.trim() && saveName(nameInput.trim())}
+            placeholder="Your name"
+            className="w-full bg-[#1F2E3D] text-[#F6F1E4] placeholder-[#6B7C8C] border border-[#33465A] rounded-lg px-4 py-3 text-center outline-none focus:border-[#C9A227] transition-colors"
+            style={{ fontFamily: "Inter, sans-serif" }}
+          />
+          <button
+            onClick={() => nameInput.trim() && saveName(nameInput.trim())}
+            disabled={!nameInput.trim()}
+            className="w-full mt-3 bg-[#C9A227] disabled:bg-[#3a3627] disabled:text-[#6B7C8C] text-[#16202B] font-semibold rounded-lg py-3 transition-colors hover:bg-[#dbb52f]"
+            style={{ fontFamily: "Inter, sans-serif" }}
+          >
+            Enter
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="h-[100dvh] bg-[#16202B] flex flex-col overflow-hidden"
+      style={{ paddingTop: "env(safe-area-inset-top, 0px)", paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
+    >
+      <header className="flex items-center justify-between px-4 py-3 flex-shrink-0">
+        <div className="flex items-center gap-2">
+          <Bird className="w-[18px] h-[18px] text-[#C9A227]" />
+          <span className="text-[#F6F1E4]" style={{ fontFamily: "'Fraunces', serif", fontSize: "1.1rem" }}>
+            Best Bird of 2026
+          </span>
+        </div>
+        <div className="flex items-center gap-2 text-xs text-[#9FB0BE]" style={{ fontFamily: "Inter, sans-serif" }}>
+          <Users className="w-3.5 h-3.5" />
+          {totalVoters}
+        </div>
+      </header>
+
+      {error && (
+        <div className="mx-4 mb-2 text-xs text-[#e6b0a8] bg-[#3a2222] border border-[#5c3030] rounded-lg px-3 py-1.5 flex-shrink-0" style={{ fontFamily: "Inter, sans-serif" }}>
+          {error}
+        </div>
+      )}
+
+      <main className="flex-1 min-h-0 overflow-hidden">
+        {!booksLoaded ? (
+          <div className="h-full flex items-center justify-center">
+            <Loader2 className="w-6 h-6 text-[#C9A227] animate-spin" />
+          </div>
+        ) : (
+          <>
+            {view === "deck" && (
+              <DeckView
+                books={books}
+                index={index}
+                setIndex={setIndex}
+                flipped={flipped}
+                dragX={dragX}
+                onPointerDown={onPointerDown}
+                onPointerMove={onPointerMove}
+                endDrag={endDrag}
+                onGoRank={() => setView("rank")}
+                isEditor={isEditor}
+                onGoManage={() => setView("manage")}
+              />
+            )}
+            {view === "rank" && (
+              <RankView books={books} ranking={ranking} onPick={pickRanking} saving={saving} />
+            )}
+            {view === "results" && <ResultsView results={results} totalVoters={totalVoters} maxPoints={maxPoints} />}
+            {view === "manage" && isEditor && (
+              <ManageView
+                books={books}
+                form={form}
+                setForm={setForm}
+                saveBook={saveBook}
+                removeBook={removeBook}
+                moveBook={moveBook}
+                saving={saving}
+                editingId={editingId}
+                startEdit={startEdit}
+                cancelEdit={cancelEdit}
+              />
+            )}
+          </>
+        )}
+      </main>
+
+      <nav className="flex-shrink-0 border-t border-[#2A3B4C] bg-[#16202B] px-2 py-1.5 flex items-center justify-around" style={{ fontFamily: "Inter, sans-serif" }}>
+        <NavButton icon={Layers} label="Browse" active={view === "deck"} onClick={() => setView("deck")} />
+        <NavButton icon={ListChecks} label="My picks" active={view === "rank"} onClick={() => setView("rank")} />
+        <NavButton icon={BarChart3} label="Results" active={view === "results"} onClick={() => setView("results")} />
+        <NavButton
+          icon={Settings}
+          label="Manage"
+          active={view === "manage"}
+          onClick={() => (isEditor ? setView("manage") : setShowGate(true))}
+          dim={!isEditor}
+        />
+      </nav>
+
+      {showGate && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center px-6 z-50" onClick={() => setShowGate(false)}>
+          <div
+            className="bg-[#1F2E3D] border border-[#33465A] rounded-xl p-5 max-w-xs w-full"
+            onClick={(e) => e.stopPropagation()}
+            style={{ fontFamily: "Inter, sans-serif" }}
+          >
+            <h3 className="text-[#F6F1E4] mb-1" style={{ fontFamily: "'Fraunces', serif", fontSize: "1.2rem" }}>
+              Editor access
+            </h3>
+            <p className="text-[#9FB0BE] text-sm mb-3">Enter the passcode to manage the sighting list.</p>
+            <input
+              autoFocus
+              type="password"
+              value={passInput}
+              onChange={(e) => {
+                setPassInput(e.target.value);
+                setPassError("");
+              }}
+              onKeyDown={(e) => e.key === "Enter" && unlockEditor()}
+              className="w-full bg-[#16202B] text-[#F6F1E4] border border-[#33465A] rounded-lg px-3 py-2 outline-none focus:border-[#C9A227] mb-2"
+              placeholder="Passcode"
+            />
+            {passError && <p className="text-[#e6b0a8] text-xs mb-2">{passError}</p>}
+            <div className="flex gap-2">
+              <button onClick={() => setShowGate(false)} className="flex-1 border border-[#33465A] text-[#9FB0BE] rounded-lg py-2 text-sm">
+                Cancel
+              </button>
+              <button onClick={unlockEditor} className="flex-1 bg-[#C9A227] text-[#16202B] font-semibold rounded-lg py-2 text-sm">
+                Unlock
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NavButton({ icon: Icon, label, active, onClick, dim }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-lg transition-colors ${
+        active ? "text-[#C9A227]" : dim ? "text-[#41546a]" : "text-[#9FB0BE]"
+      }`}
+    >
+      <Icon className="w-5 h-5" />
+      <span className="text-[10px]">{label}</span>
+    </button>
+  );
+}
+
+function DeckView({ books, index, setIndex, flipped, dragX, onPointerDown, onPointerMove, endDrag, onGoRank, isEditor, onGoManage }) {
+  if (books.length === 0) {
+    return (
+      <div className="h-full flex flex-col items-center justify-center px-8 text-center">
+        <Bird className="w-10 h-10 text-[#3a4b5c] mb-3" />
+        <p className="text-[#EDE6D6] mb-1" style={{ fontFamily: "'Fraunces', serif", fontSize: "1.3rem" }}>
+          No sightings added yet
+        </p>
+        <p className="text-[#6B7C8C] text-sm mb-4" style={{ fontFamily: "Inter, sans-serif" }}>
+          {isEditor ? "Add the first rare bird to get voting started." : "Ask your poll admin to add a few sightings."}
+        </p>
+        {isEditor && (
+          <button onClick={onGoManage} className="bg-[#C9A227] text-[#16202B] font-semibold rounded-lg px-4 py-2 text-sm" style={{ fontFamily: "Inter, sans-serif" }}>
+            Add a sighting
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  const book = books[Math.min(index, books.length - 1)];
+  const isFlipped = !!flipped[index];
+  const atEnd = index === books.length - 1;
+  const synopsisRef = useRef(null);
+
+  // Every time the card flips to show the synopsis — same book or not —
+  // start the reader at the top rather than wherever they'd scrolled to last.
+  useEffect(() => {
+    if (isFlipped && synopsisRef.current) {
+      synopsisRef.current.scrollTop = 0;
+    }
+  }, [isFlipped, index]);
+
+  return (
+    <div className="h-full flex flex-col px-4 pt-2 pb-3">
+      <div className="flex items-center justify-center gap-1.5 mb-2 flex-shrink-0">
+        {books.map((_, i) => (
+          <div
+            key={i}
+            className="rounded-full transition-all"
+            style={{ width: i === index ? 16 : 6, height: 6, backgroundColor: i === index ? "#C9A227" : "#33465A" }}
+          />
+        ))}
+      </div>
+
+      <div
+        className="flex-1 min-h-0 select-none"
+        style={{ perspective: 1200 }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+        onPointerLeave={endDrag}
+      >
+        <div
+          className="relative w-full h-full rounded-2xl shadow-2xl"
+          style={{ transform: `translateX(${dragX}px) rotate(${dragX / 40}deg)`, transition: dragX === 0 ? "transform 0.25s ease" : "none" }}
+        >
+          <div
+            className="relative w-full h-full"
+            style={{ transformStyle: "preserve-3d", transition: "transform 0.5s cubic-bezier(.2,.8,.2,1)", transform: isFlipped ? "rotateY(180deg)" : "rotateY(0deg)" }}
+          >
+            <div className="absolute inset-0 rounded-2xl overflow-hidden bg-[#1F2E3D]" style={{ backfaceVisibility: "hidden" }}>
+              <CoverImage book={book} />
+              <div className="absolute inset-x-0 bottom-0 p-5 pt-16" style={{ background: "linear-gradient(to top, rgba(16,20,25,0.92), rgba(16,20,25,0))" }}>
+                <h2 className="text-[#F6F1E4] leading-tight" style={{ fontFamily: "'Fraunces', serif", fontSize: "1.6rem" }}>
+                  {book.title}
+                </h2>
+                {book.author && (
+                  <p className="text-[#C9A227] text-sm mt-1" style={{ fontFamily: "Inter, sans-serif" }}>
+                    {book.author}
+                  </p>
+                )}
+                <p className="text-[#9FB0BE] text-xs mt-2" style={{ fontFamily: "Inter, sans-serif" }}>
+                  Tap to read the sighting details
+                </p>
+              </div>
+            </div>
+
+            <div
+              className="absolute inset-0 rounded-2xl overflow-hidden bg-[#F6F1E4] p-6 flex flex-col"
+              style={{ backfaceVisibility: "hidden", transform: "rotateY(180deg)" }}
+            >
+              <h3 className="text-[#16202B] mb-1" style={{ fontFamily: "'Fraunces', serif", fontSize: "1.4rem" }}>
+                {book.title}
+              </h3>
+              {book.author && (
+                <p className="text-[#8B3A3A] text-sm mb-3" style={{ fontFamily: "Inter, sans-serif" }}>
+                  {book.author}
+                </p>
+              )}
+              <div ref={synopsisRef} className="flex-1 overflow-y-auto synopsis-scroll" style={{ touchAction: "pan-y" }}>
+                <p className="text-[#3A3428] text-[0.95rem] leading-relaxed" style={{ fontFamily: "Inter, sans-serif" }}>
+                  {book.synopsis || "No sighting details yet."}
+                </p>
+              </div>
+              <div className="flex-shrink-0 mt-3 flex items-center justify-between">
+                <p className="text-[#7A6F55] text-xs">Tap to flip back</p>
+                {book.photoCredit && <p className="text-[#7A6F55] text-xs">Photo: {book.photoCredit}</p>}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between pt-3 flex-shrink-0">
+        <button
+          onClick={() => setIndex((i) => Math.max(0, i - 1))}
+          disabled={index === 0}
+          className="w-10 h-10 rounded-full bg-[#1F2E3D] disabled:opacity-30 text-[#EDE6D6] flex items-center justify-center"
+        >
+          <ChevronLeft className="w-5 h-5" />
+        </button>
+        <span className="text-[#6B7C8C] text-xs" style={{ fontFamily: "Inter, sans-serif" }}>
+          {index + 1} of {books.length}
+        </span>
+        {atEnd ? (
+          <button
+            onClick={onGoRank}
+            className="h-10 px-4 rounded-full bg-[#C9A227] text-[#16202B] text-sm font-semibold flex items-center gap-1.5"
+            style={{ fontFamily: "Inter, sans-serif" }}
+          >
+            Rank picks <ChevronRight className="w-4 h-4" />
+          </button>
+        ) : (
+          <button onClick={() => setIndex((i) => Math.min(books.length - 1, i + 1))} className="w-10 h-10 rounded-full bg-[#1F2E3D] text-[#EDE6D6] flex items-center justify-center">
+            <ChevronRight className="w-5 h-5" />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CoverImage({ book }) {
+  const [errored, setErrored] = useState(false);
+  // React reuses this same component instance as you swipe between birds —
+  // without this, one bird's failed image load "sticks" and wrongly hides
+  // every other bird's photo too. Resetting on URL change gives each photo
+  // its own clean slate.
+  useEffect(() => {
+    setErrored(false);
+  }, [book.coverUrl]);
+  const hasImage = book.coverUrl && !errored;
+  return hasImage ? (
+    <img src={book.coverUrl} alt={book.title} className="absolute inset-0 w-full h-full object-cover" onError={() => setErrored(true)} draggable={false} />
+  ) : (
+    <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-[#233042] to-[#16202B]">
+      <Bird className="w-14 h-14 text-[#3a4b5c]" />
+    </div>
+  );
+}
+
+function RankView({ books, ranking, onPick, saving }) {
+  if (books.length === 0) {
+    return (
+      <div className="h-full flex items-center justify-center px-8 text-center">
+        <p className="text-[#6B7C8C] text-sm" style={{ fontFamily: "Inter, sans-serif" }}>
+          Nothing to rank until sightings are added.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full overflow-y-auto px-4 pt-3 pb-4">
+      <div className="flex items-center justify-between mb-1">
+        <h2 className="text-[#F6F1E4]" style={{ fontFamily: "'Fraunces', serif", fontSize: "1.3rem" }}>
+          Rank your top 3
+        </h2>
+        {saving && (
+          <span className="text-[#9FB0BE] text-xs flex items-center gap-1" style={{ fontFamily: "Inter, sans-serif" }}>
+            <Loader2 className="w-3 h-3 animate-spin" /> Saving
+          </span>
+        )}
+      </div>
+      <p className="text-[#9FB0BE] text-xs mb-4" style={{ fontFamily: "Inter, sans-serif" }}>
+        Tap 1st, 2nd, and 3rd for your favorites — tap again to clear one. Saves automatically.
+      </p>
+
+      <div className="space-y-2.5">
+        {books.map((b) => {
+          const isFirst = ranking.first === b.id;
+          const isSecond = ranking.second === b.id;
+          const isThird = ranking.third === b.id;
+          return (
+            <div
+              key={b.id}
+              className={`flex items-center gap-3 rounded-xl p-2.5 border-2 transition-colors ${
+                isFirst
+                  ? "border-[#C9A227] bg-[#1F2E3D]"
+                  : isSecond
+                  ? "border-[#8B3A3A] bg-[#1F2E3D]"
+                  : isThird
+                  ? "border-[#5B7A8C] bg-[#1F2E3D]"
+                  : "border-transparent bg-[#1a2733]"
+              }`}
+            >
+              <div className="relative flex-shrink-0 rounded overflow-hidden bg-[#233042]" style={{ height: 60, width: 44 }}>
+                <CoverImage book={b} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-[#F6F1E4] text-sm truncate" style={{ fontFamily: "Inter, sans-serif", fontWeight: 600 }}>
+                  {b.title}
+                </p>
+                {b.author && (
+                  <p className="text-[#6B7C8C] text-xs truncate" style={{ fontFamily: "Inter, sans-serif" }}>
+                    {b.author}
+                  </p>
+                )}
+              </div>
+              <div className="flex gap-1.5 flex-shrink-0">
+                <button
+                  onClick={() => onPick(b.id, "first")}
+                  className={`w-9 h-9 rounded-full text-xs font-bold flex items-center justify-center transition-colors ${
+                    isFirst ? "bg-[#C9A227] text-[#16202B]" : "bg-[#233042] text-[#6B7C8C]"
+                  }`}
+                >
+                  1st
+                </button>
+                <button
+                  onClick={() => onPick(b.id, "second")}
+                  className={`w-9 h-9 rounded-full text-xs font-bold flex items-center justify-center transition-colors ${
+                    isSecond ? "bg-[#8B3A3A] text-[#F6F1E4]" : "bg-[#233042] text-[#6B7C8C]"
+                  }`}
+                >
+                  2nd
+                </button>
+                <button
+                  onClick={() => onPick(b.id, "third")}
+                  className={`w-9 h-9 rounded-full text-xs font-bold flex items-center justify-center transition-colors ${
+                    isThird ? "bg-[#5B7A8C] text-[#F6F1E4]" : "bg-[#233042] text-[#6B7C8C]"
+                  }`}
+                >
+                  3rd
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function ResultsView({ results, totalVoters, maxPoints }) {
+  if (results.length === 0) {
+    return (
+      <div className="h-full flex items-center justify-center px-8 text-center">
+        <p className="text-[#6B7C8C] text-sm" style={{ fontFamily: "Inter, sans-serif" }}>
+          Nothing to tally yet.
+        </p>
+      </div>
+    );
+  }
+  return (
+    <div className="h-full overflow-y-auto px-4 pt-3 pb-4">
+      <h2 className="text-[#F6F1E4] mb-1" style={{ fontFamily: "'Fraunces', serif", fontSize: "1.3rem" }}>
+        Results
+      </h2>
+      <p className="text-[#9FB0BE] text-xs mb-4" style={{ fontFamily: "Inter, sans-serif" }}>
+        {totalVoters} {totalVoters === 1 ? "person has" : "people have"} voted · 1st = 3 pts, 2nd = 2 pts, 3rd = 1 pt
+      </p>
+      <div className="space-y-4">
+        {results.map((b, i) => (
+          <div key={b.id}>
+            <div className="flex justify-between items-baseline mb-1">
+              <span className="text-[#F6F1E4] flex items-center gap-1.5" style={{ fontFamily: "'Fraunces', serif" }}>
+                {i === 0 && b.points > 0 && <span className="text-[#C9A227]">★</span>}
+                {b.title}
+              </span>
+              <span className="text-[#C9A227] text-xs" style={{ fontFamily: "Inter, sans-serif" }}>
+                {b.points} pt{b.points === 1 ? "" : "s"}
+              </span>
+            </div>
+            <div className="h-3 bg-[#1F2E3D] rounded-full overflow-hidden">
+              <div
+                className="h-full bg-gradient-to-r from-[#8B3A3A] to-[#C9A227] rounded-full transition-all duration-500"
+                style={{ width: `${b.points === 0 ? 0 : Math.max((b.points / maxPoints) * 100, 4)}%` }}
+              />
+            </div>
+            <p className="text-[#6B7C8C] text-xs mt-1" style={{ fontFamily: "Inter, sans-serif" }}>
+              {b.firstCount} first-choice · {b.secondCount} second-choice · {b.thirdCount} third-choice
+            </p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ManageView({
+  books,
+  form,
+  setForm,
+  saveBook,
+  removeBook,
+  moveBook,
+  saving,
+  editingId,
+  startEdit,
+  cancelEdit,
+}) {
+  const [pendingDelete, setPendingDelete] = useState(null);
+  return (
+    <div className="h-full overflow-y-auto px-4 pt-3 pb-4" style={{ fontFamily: "Inter, sans-serif" }}>
+      <h2 className="text-[#F6F1E4] mb-3" style={{ fontFamily: "'Fraunces', serif", fontSize: "1.3rem" }}>
+        Manage the poll
+      </h2>
+
+      <div className={`bg-[#1F2E3D] border rounded-xl p-4 mb-5 ${editingId ? "border-[#C9A227]" : "border-[#33465A]"}`}>
+        {editingId && (
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-[#C9A227] text-xs uppercase tracking-wide flex items-center gap-1">
+              <Pencil className="w-3 h-3" /> Editing
+            </span>
+            <button onClick={cancelEdit} className="text-[#9FB0BE] text-xs flex items-center gap-1 hover:text-[#F6F1E4]">
+              <X className="w-3 h-3" /> Cancel
+            </button>
+          </div>
+        )}
+        <div className="space-y-2.5">
+          <input
+            value={form.title}
+            onChange={(e) => setForm({ ...form, title: e.target.value })}
+            placeholder="Species name *"
+            className="w-full bg-[#16202B] text-[#F6F1E4] placeholder-[#6B7C8C] border border-[#33465A] rounded-lg px-3 py-2 text-sm outline-none focus:border-[#C9A227]"
+          />
+          <input
+            value={form.author}
+            onChange={(e) => setForm({ ...form, author: e.target.value })}
+            placeholder="Observer & location (e.g. J. Smith, French Creek)"
+            className="w-full bg-[#16202B] text-[#F6F1E4] placeholder-[#6B7C8C] border border-[#33465A] rounded-lg px-3 py-2 text-sm outline-none focus:border-[#C9A227]"
+          />
+          <input
+            value={form.coverUrl}
+            onChange={(e) => setForm({ ...form, coverUrl: e.target.value })}
+            placeholder="Photo URL (eBird/Macaulay Embed link, or any image URL)"
+            className="w-full bg-[#16202B] text-[#F6F1E4] placeholder-[#6B7C8C] border border-[#33465A] rounded-lg px-3 py-2 text-sm outline-none focus:border-[#C9A227]"
+          />
+          <input
+            value={form.photoCredit}
+            onChange={(e) => setForm({ ...form, photoCredit: e.target.value })}
+            placeholder="Photo credit (photographer's name)"
+            className="w-full bg-[#16202B] text-[#F6F1E4] placeholder-[#6B7C8C] border border-[#33465A] rounded-lg px-3 py-2 text-sm outline-none focus:border-[#C9A227]"
+          />
+          <textarea
+            value={form.synopsis}
+            onChange={(e) => setForm({ ...form, synopsis: e.target.value })}
+            placeholder="Sighting details — when, where, how it was found, why it's notable"
+            rows={4}
+            className="w-full bg-[#16202B] text-[#F6F1E4] placeholder-[#6B7C8C] border border-[#33465A] rounded-lg px-3 py-2 text-sm outline-none focus:border-[#C9A227] resize-none"
+          />
+          <button
+            onClick={saveBook}
+            disabled={!form.title.trim() || saving}
+            className="w-full bg-[#C9A227] disabled:bg-[#3a3627] disabled:text-[#6B7C8C] text-[#16202B] font-semibold rounded-lg py-2.5 text-sm"
+          >
+            {saving ? "Saving…" : editingId ? "Save changes" : "Add to the poll"}
+          </button>
+        </div>
+      </div>
+
+      <p className="text-[#6B7C8C] text-xs mb-2 uppercase tracking-wide">{books.length} in the poll</p>
+      <p className="text-[#6B7C8C] text-xs mb-2 flex items-center gap-1">
+        <ArrowRight className="w-3 h-3" /> Swipe right from the left edge of a sighting to delete it
+      </p>
+      <div className="space-y-2">
+        {books.map((b, i) => (
+          <SwipeableBookRow
+            key={b.id}
+            book={b}
+            isEditing={editingId === b.id}
+            onEdit={() => startEdit(b)}
+            onMoveUp={() => moveBook(b.id, "up")}
+            onMoveDown={() => moveBook(b.id, "down")}
+            canMoveUp={i > 0}
+            canMoveDown={i < books.length - 1}
+            onRequestDelete={() => setPendingDelete(b)}
+          />
+        ))}
+      </div>
+
+      {pendingDelete && (
+        <div
+          className="fixed inset-0 bg-black/60 flex items-center justify-center px-6 z-50"
+          onClick={() => setPendingDelete(null)}
+        >
+          <div
+            className="bg-[#1F2E3D] border border-[#33465A] rounded-xl p-5 max-w-xs w-full"
+            onClick={(e) => e.stopPropagation()}
+            style={{ fontFamily: "Inter, sans-serif" }}
+          >
+            <h3 className="text-[#F6F1E4] mb-1" style={{ fontFamily: "'Fraunces', serif", fontSize: "1.2rem" }}>
+              Remove this sighting?
+            </h3>
+            <p className="text-[#9FB0BE] text-sm mb-4">
+              "{pendingDelete.title}" will be removed from the poll, and cleared from anyone's saved picks. This can't be
+              undone.
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setPendingDelete(null)}
+                className="flex-1 border border-[#33465A] text-[#9FB0BE] rounded-lg py-2 text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  removeBook(pendingDelete.id);
+                  setPendingDelete(null);
+                }}
+                className="flex-1 bg-[#8B3A3A] text-[#F6F1E4] font-semibold rounded-lg py-2 text-sm"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const EDGE_SWIPE_ZONE_PX = 36; // gesture must start within this many px of the screen's left edge
+const EDGE_SWIPE_THRESHOLD_PX = 70; // how far right it needs to travel to count as a delete swipe
+
+function SwipeableBookRow({ book, isEditing, onEdit, onMoveUp, onMoveDown, canMoveUp, canMoveDown, onRequestDelete }) {
+  const [dragX, setDragX] = useState(0);
+  const dragRef = useRef({ startX: 0, dragging: false });
+
+  const onPointerDown = (e) => {
+    // Only treat this as the delete gesture if it starts right at the edge of
+    // the screen — everywhere else on the row, taps on its buttons work normally.
+    if (e.clientX > EDGE_SWIPE_ZONE_PX) return;
+    dragRef.current = { startX: e.clientX, dragging: true };
+  };
+  const onPointerMove = (e) => {
+    if (!dragRef.current.dragging) return;
+    const dx = e.clientX - dragRef.current.startX;
+    if (dx > 0) setDragX(Math.min(dx, 120));
+  };
+  const endDrag = () => {
+    if (!dragRef.current.dragging) return;
+    dragRef.current.dragging = false;
+    if (dragX > EDGE_SWIPE_THRESHOLD_PX) onRequestDelete();
+    setDragX(0);
+  };
+
+  return (
+    <div className="relative overflow-hidden rounded-lg">
+      <div
+        className="absolute inset-0 flex items-center gap-2 px-4 bg-[#8B3A3A]"
+        style={{ opacity: Math.min(dragX / EDGE_SWIPE_THRESHOLD_PX, 1) }}
+      >
+        <Trash2 className="w-4 h-4 text-[#F6F1E4]" />
+        <span className="text-[#F6F1E4] text-xs">{dragX > EDGE_SWIPE_THRESHOLD_PX ? "Release to delete" : "Keep swiping…"}</span>
+      </div>
+      <div
+        className={`relative flex items-center gap-2.5 p-2 border ${isEditing ? "border-[#C9A227] bg-[#1F2E3D]" : "border-transparent bg-[#1a2733]"}`}
+        style={{ transform: `translateX(${dragX}px)`, transition: dragX === 0 ? "transform 0.2s ease" : "none" }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+        onPointerLeave={endDrag}
+      >
+        <div className="relative rounded overflow-hidden bg-[#233042] flex-shrink-0" style={{ width: 32, height: 44 }}>
+          <CoverImage book={book} />
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-[#F6F1E4] text-sm truncate">{book.title}</p>
+          <p className="text-[#6B7C8C] text-xs truncate">{book.author}</p>
+        </div>
+        <button onClick={onEdit} className="text-[#9FB0BE] hover:text-[#C9A227] p-1">
+          <Pencil className="w-3.5 h-3.5" />
+        </button>
+        <button onClick={onMoveUp} disabled={!canMoveUp} className="text-[#6B7C8C] disabled:opacity-20 p-1">
+          <ArrowUp className="w-3.5 h-3.5" />
+        </button>
+        <button onClick={onMoveDown} disabled={!canMoveDown} className="text-[#6B7C8C] disabled:opacity-20 p-1">
+          <ArrowDown className="w-3.5 h-3.5" />
+        </button>
+        <button onClick={onRequestDelete} className="text-[#8B3A3A] p-1">
+          <Trash2 className="w-3.5 h-3.5" />
+        </button>
+      </div>
+    </div>
+  );
+}
