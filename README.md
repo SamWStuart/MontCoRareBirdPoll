@@ -38,6 +38,10 @@ service cloud.firestore {
       allow read: if true;
       allow write: if true;
     }
+    match /settings/{docId} {
+      allow read: if true;
+      allow write: if true;
+    }
   }
 }
 ```
@@ -143,3 +147,22 @@ the sightings, flips each card to read the details, and ranks their top 3
 once they've seen them all. Rankings save automatically as people tap — no
 submit button, and tapping a pick again clears it. Results tally live
 (1st = 3 points, 2nd = 2, 3rd = 1) and update for everyone in real time.
+
+## Results reveal
+
+By default, the Results tab is hidden from everyone except the manager (the
+device that's unlocked Editor mode). In **Manage**, under "Results reveal,"
+you can:
+
+- Set a **scheduled reveal time** — once that moment passes, Results
+  unlocks automatically for everyone, no action needed from you at the time.
+- **Reveal now** — flips it open immediately, overriding any scheduled time
+  (handy if you want to reveal it live at a get-together instead of waiting
+  on a timer).
+- **Re-hide results** — flips it back closed if you change your mind, even
+  after a scheduled time has passed.
+
+The manager's own device always sees results, regardless of these settings —
+useful for double-checking the poll is working, less useful if you want the
+reveal to be a surprise for yourself too. There's no way to hide it from the
+manager currently; if that's ever wanted, it'd need its own toggle.

@@ -29,6 +29,9 @@ import {
   ListChecks,
   Pencil,
   Loader2,
+  Lock,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 
 // Change this before you share the link with whoever manages the sighting list.
@@ -67,6 +70,25 @@ function describeWriteError(e) {
   return "Couldn't save — try again.";
 }
 
+// Ticks every 30s so a countdown display stays roughly live without hammering
+// re-renders. Returns null once the target has passed (or if there is none).
+function useCountdown(targetMs) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!targetMs) return;
+    const id = setInterval(() => setNow(Date.now()), 30000);
+    return () => clearInterval(id);
+  }, [targetMs]);
+  if (!targetMs) return null;
+  const diff = targetMs - now;
+  if (diff <= 0) return null;
+  return {
+    days: Math.floor(diff / 86400000),
+    hours: Math.floor((diff % 86400000) / 3600000),
+    minutes: Math.floor((diff % 3600000) / 60000),
+  };
+}
+
 export default function App() {
   const [voterId] = useState(getOrCreateVoterId);
   const [booksLoaded, setBooksLoaded] = useState(false);
@@ -91,6 +113,8 @@ export default function App() {
 
   const [form, setForm] = useState(emptyForm);
   const [editingId, setEditingId] = useState(null); // sighting id being edited, or null when adding new
+
+  const [resultsSettings, setResultsSettings] = useState({ revealAt: "", revealed: false });
 
   // ---- live subscriptions ----
   useEffect(() => {
@@ -117,6 +141,20 @@ export default function App() {
         const next = {};
         snap.docs.forEach((d) => (next[d.id] = d.data()));
         setVotes(next);
+      },
+      (e) => console.error(e)
+    );
+    return unsub;
+  }, []);
+
+  useEffect(() => {
+    const unsub = onSnapshot(
+      doc(db, "settings", "results"),
+      (snap) => {
+        if (snap.exists()) {
+          const d = snap.data();
+          setResultsSettings({ revealAt: d.revealAt || "", revealed: !!d.revealed });
+        }
       },
       (e) => console.error(e)
     );
@@ -259,6 +297,19 @@ export default function App() {
     }
   };
 
+  const saveResultsSettings = async (next) => {
+    setSaving(true);
+    try {
+      await withTimeout(setDoc(doc(db, "settings", "results"), next, { merge: true }));
+      setError("");
+    } catch (e) {
+      console.error(e);
+      setError(describeWriteError(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const pickRanking = async (bookId, slot) => {
     const next = { ...ranking };
     const slots = ["first", "second", "third"];
@@ -352,6 +403,10 @@ export default function App() {
     .sort((a, b) => b.points - a.points);
   const maxPoints = Math.max(1, ...results.map((r) => r.points));
 
+  const revealTargetMs = resultsSettings.revealAt ? new Date(resultsSettings.revealAt).getTime() : null;
+  const revealTimeReached = revealTargetMs && Date.now() >= revealTargetMs;
+  const resultsAreRevealed = isEditor || resultsSettings.revealed || revealTimeReached;
+
   if (!name) {
     return (
       <div className="min-h-[100dvh] bg-[#16202B] flex items-center justify-center px-6">
@@ -436,7 +491,12 @@ export default function App() {
             {view === "rank" && (
               <RankView books={books} ranking={ranking} onPick={pickRanking} saving={saving} />
             )}
-            {view === "results" && <ResultsView results={results} totalVoters={totalVoters} maxPoints={maxPoints} />}
+            {view === "results" &&
+              (resultsAreRevealed ? (
+                <ResultsView results={results} totalVoters={totalVoters} maxPoints={maxPoints} />
+              ) : (
+                <LockedResultsView revealTargetMs={revealTargetMs} />
+              ))}
             {view === "manage" && isEditor && (
               <ManageView
                 books={books}
@@ -449,6 +509,8 @@ export default function App() {
                 editingId={editingId}
                 startEdit={startEdit}
                 cancelEdit={cancelEdit}
+                resultsSettings={resultsSettings}
+                saveResultsSettings={saveResultsSettings}
               />
             )}
           </>
@@ -771,6 +833,43 @@ function RankView({ books, ranking, onPick, saving }) {
   );
 }
 
+function LockedResultsView({ revealTargetMs }) {
+  const countdown = useCountdown(revealTargetMs);
+  const formattedTarget = revealTargetMs
+    ? new Date(revealTargetMs).toLocaleString(undefined, {
+        month: "long",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      })
+    : null;
+
+  return (
+    <div className="h-full flex flex-col items-center justify-center px-8 text-center">
+      <Lock className="w-9 h-9 text-[#3a4b5c] mb-3" />
+      <p className="text-[#F6F1E4] mb-1" style={{ fontFamily: "'Fraunces', serif", fontSize: "1.3rem" }}>
+        Results are under wraps
+      </p>
+      {formattedTarget ? (
+        <>
+          <p className="text-[#9FB0BE] text-sm mb-3" style={{ fontFamily: "Inter, sans-serif" }}>
+            Revealing {formattedTarget}
+          </p>
+          {countdown && (
+            <p className="text-[#C9A227] text-sm" style={{ fontFamily: "Inter, sans-serif" }}>
+              {countdown.days}d {countdown.hours}h {countdown.minutes}m to go
+            </p>
+          )}
+        </>
+      ) : (
+        <p className="text-[#9FB0BE] text-sm" style={{ fontFamily: "Inter, sans-serif" }}>
+          Ask your poll admin when they'll be revealed.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function ResultsView({ results, totalVoters, maxPoints }) {
   if (results.length === 0) {
     return (
@@ -828,13 +927,80 @@ function ManageView({
   editingId,
   startEdit,
   cancelEdit,
+  resultsSettings,
+  saveResultsSettings,
 }) {
   const [pendingDelete, setPendingDelete] = useState(null);
+  const [revealAtInput, setRevealAtInput] = useState(resultsSettings.revealAt || "");
+
+  useEffect(() => {
+    setRevealAtInput(resultsSettings.revealAt || "");
+  }, [resultsSettings.revealAt]);
+
+  const revealTargetMs = resultsSettings.revealAt ? new Date(resultsSettings.revealAt).getTime() : null;
+  const timeReached = revealTargetMs && Date.now() >= revealTargetMs;
+  const currentlyRevealed = resultsSettings.revealed || timeReached;
+
   return (
     <div className="h-full overflow-y-auto px-4 pt-3 pb-4" style={{ fontFamily: "Inter, sans-serif" }}>
       <h2 className="text-[#F6F1E4] mb-3" style={{ fontFamily: "'Fraunces', serif", fontSize: "1.3rem" }}>
         Manage the poll
       </h2>
+
+      <div className="bg-[#1F2E3D] border border-[#33465A] rounded-xl p-4 mb-5">
+        <div className="flex items-center gap-1.5 mb-2">
+          <Lock className="w-3.5 h-3.5 text-[#C9A227]" />
+          <h3 className="text-[#F6F1E4] text-sm font-semibold">Results reveal</h3>
+        </div>
+        <p className="text-[#9FB0BE] text-xs mb-3">
+          You (as manager) always see results. Everyone else sees them once the scheduled time hits, or you reveal
+          manually below — whichever comes first.
+        </p>
+        <label className="text-[#6B7C8C] text-xs block mb-1">Scheduled reveal time</label>
+        <input
+          type="datetime-local"
+          value={revealAtInput}
+          onChange={(e) => setRevealAtInput(e.target.value)}
+          className="w-full bg-[#16202B] text-[#F6F1E4] border border-[#33465A] rounded-lg px-3 py-2 text-sm outline-none focus:border-[#C9A227] mb-2"
+        />
+        <div className="flex gap-2 mb-3">
+          <button
+            onClick={() => saveResultsSettings({ revealAt: revealAtInput })}
+            className="flex-1 border border-[#33465A] text-[#9FB0BE] rounded-lg py-2 text-xs"
+          >
+            Save time
+          </button>
+          {resultsSettings.revealAt && (
+            <button
+              onClick={() => {
+                setRevealAtInput("");
+                saveResultsSettings({ revealAt: "" });
+              }}
+              className="flex-1 border border-[#33465A] text-[#9FB0BE] rounded-lg py-2 text-xs"
+            >
+              Clear time
+            </button>
+          )}
+        </div>
+        <div className="flex items-center justify-between border-t border-[#33465A] pt-3">
+          <span className="text-xs flex items-center gap-1.5" style={{ color: currentlyRevealed ? "#C9A227" : "#9FB0BE" }}>
+            {currentlyRevealed ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+            {resultsSettings.revealed
+              ? "Manually revealed"
+              : timeReached
+              ? "Reveal time has passed"
+              : "Hidden from voters"}
+          </span>
+          <button
+            onClick={() => saveResultsSettings({ revealed: !resultsSettings.revealed })}
+            className={`text-xs font-semibold rounded-full px-3 py-1.5 ${
+              resultsSettings.revealed ? "border border-[#33465A] text-[#9FB0BE]" : "bg-[#C9A227] text-[#16202B]"
+            }`}
+          >
+            {resultsSettings.revealed ? "Re-hide results" : "Reveal now"}
+          </button>
+        </div>
+      </div>
 
       <div className={`bg-[#1F2E3D] border rounded-xl p-4 mb-5 ${editingId ? "border-[#C9A227]" : "border-[#33465A]"}`}>
         {editingId && (
