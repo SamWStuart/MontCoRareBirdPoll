@@ -311,6 +311,7 @@ export default function App() {
   };
 
   const pickRanking = async (bookId, slot) => {
+    if (pollLocked) return; // voting's closed — results are already visible
     const next = { ...ranking };
     const slots = ["first", "second", "third"];
     if (next[slot] === bookId) {
@@ -406,6 +407,9 @@ export default function App() {
   const revealTargetMs = resultsSettings.revealAt ? new Date(resultsSettings.revealAt).getTime() : null;
   const revealTimeReached = revealTargetMs && Date.now() >= revealTargetMs;
   const resultsAreRevealed = isEditor || resultsSettings.revealed || revealTimeReached;
+  // Voting closes for everyone — including the manager — the moment results
+  // become visible to the group, whether that's by schedule or manual reveal.
+  const pollLocked = resultsSettings.revealed || revealTimeReached;
 
   if (!name) {
     return (
@@ -489,7 +493,7 @@ export default function App() {
               />
             )}
             {view === "rank" && (
-              <RankView books={books} ranking={ranking} onPick={pickRanking} saving={saving} />
+              <RankView books={books} ranking={ranking} onPick={pickRanking} saving={saving} pollLocked={pollLocked} />
             )}
             {view === "results" &&
               (resultsAreRevealed ? (
@@ -519,7 +523,7 @@ export default function App() {
 
       <nav className="flex-shrink-0 border-t border-[#2A3B4C] bg-[#16202B] px-2 py-1.5 flex items-center justify-around" style={{ fontFamily: "Inter, sans-serif" }}>
         <NavButton icon={Layers} label="Browse" active={view === "deck"} onClick={() => setView("deck")} />
-        <NavButton icon={ListChecks} label="My picks" active={view === "rank"} onClick={() => setView("rank")} />
+        <NavButton icon={pollLocked ? Lock : ListChecks} label="My picks" active={view === "rank"} onClick={() => setView("rank")} />
         <NavButton icon={BarChart3} label="Results" active={view === "results"} onClick={() => setView("results")} />
         <NavButton
           icon={Settings}
@@ -741,12 +745,26 @@ function CoverImage({ book }) {
   );
 }
 
-function RankView({ books, ranking, onPick, saving }) {
+function RankView({ books, ranking, onPick, saving, pollLocked }) {
   if (books.length === 0) {
     return (
       <div className="h-full flex items-center justify-center px-8 text-center">
         <p className="text-[#6B7C8C] text-sm" style={{ fontFamily: "Inter, sans-serif" }}>
           Nothing to rank until sightings are added.
+        </p>
+      </div>
+    );
+  }
+
+  if (pollLocked) {
+    return (
+      <div className="h-full flex flex-col items-center justify-center px-8 text-center">
+        <Lock className="w-9 h-9 text-[#3a4b5c] mb-3" />
+        <p className="text-[#F6F1E4] mb-1" style={{ fontFamily: "'Fraunces', serif", fontSize: "1.3rem" }}>
+          Voting is closed
+        </p>
+        <p className="text-[#9FB0BE] text-sm" style={{ fontFamily: "Inter, sans-serif" }}>
+          Results are in — check the Results tab to see how it turned out.
         </p>
       </div>
     );

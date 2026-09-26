@@ -166,3 +166,9 @@ The manager's own device always sees results, regardless of these settings —
 useful for double-checking the poll is working, less useful if you want the
 reveal to be a surprise for yourself too. There's no way to hide it from the
 manager currently; if that's ever wanted, it'd need its own toggle.
+
+**Voting closes automatically the moment results become visible** — whether
+that's by the scheduled time passing or you hitting "Reveal now." This
+applies to everyone, including the manager. The "My picks" tab shows a locked
+screen instead of the ranking buttons once that happens. Hitting "Re-hide
+results" reopens voting again too, since it's the same underlying signal.
