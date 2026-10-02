@@ -172,3 +172,26 @@ that's by the scheduled time passing or you hitting "Reveal now." This
 applies to everyone, including the manager. The "My picks" tab shows a locked
 screen instead of the ranking buttons once that happens. Hitting "Re-hide
 results" reopens voting again too, since it's the same underlying signal.
+
+## Honorable mentions
+
+In **Manage**, under "Also seen this year," list out notable-but-not-voteworthy
+species — one per line, plain text (e.g. `Snowy Owl — Green Lane Reservoir`).
+If that list isn't empty, one extra card appears at the very end of the swipe
+deck (after the last real sighting, right before "Rank picks") showing them
+all as a bulleted list. It's purely informational — these never enter the
+vote or the Firestore `sightings` collection. Clear the list and save to
+remove the card entirely.
+
+## Extra photos per sighting
+
+Each sighting's add/edit form has an optional "Extra photos" field for things
+like a call spectrogram, a flight shot, anything beyond the main cover photo.
+One per line: a bare URL, `URL | caption`, or `URL | caption | photo credit`
+— give every photo its own credit, same as the main cover photo. They show as
+small thumbnails on the notes (back) side of the card, below the sighting
+details — tap any one to view it full-screen with its caption and credit,
+tap outside or hit Close to dismiss. There's no limit on how many you add.
+
+Honorable mentions are plain text only, by design — no photo field for them
+at all, since they're not meant to need one.

@@ -37,7 +37,31 @@ import {
 // Change this before you share the link with whoever manages the sighting list.
 const EDITOR_PASSCODE = "rarebird2026";
 
-const emptyForm = { title: "", author: "", coverUrl: "", synopsis: "", photoCredit: "" };
+const emptyForm = { title: "", author: "", coverUrl: "", synopsis: "", photoCredit: "", extraPhotosText: "" };
+
+// One per line: "url", "url | caption", or "url | caption | photo credit".
+function parseExtraPhotos(text) {
+  return (text || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const parts = line.split("|").map((s) => s.trim());
+      return { url: parts[0] || "", caption: parts[1] || "", credit: parts[2] || "" };
+    })
+    .filter((p) => p.url);
+}
+
+function extraPhotosToText(extraPhotos) {
+  return (extraPhotos || [])
+    .map((p) => {
+      const parts = [p.url];
+      if (p.caption || p.credit) parts.push(p.caption || "");
+      if (p.credit) parts.push(p.credit);
+      return parts.join(" | ");
+    })
+    .join("\n");
+}
 
 function getOrCreateVoterId() {
   let id = localStorage.getItem("voterId");
@@ -115,6 +139,7 @@ export default function App() {
   const [editingId, setEditingId] = useState(null); // sighting id being edited, or null when adding new
 
   const [resultsSettings, setResultsSettings] = useState({ revealAt: "", revealed: false });
+  const [honorableMentions, setHonorableMentions] = useState("");
 
   // ---- live subscriptions ----
   useEffect(() => {
@@ -162,6 +187,17 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const unsub = onSnapshot(
+      doc(db, "settings", "extras"),
+      (snap) => {
+        setHonorableMentions(snap.exists() ? snap.data().honorableMentions || "" : "");
+      },
+      (e) => console.error(e)
+    );
+    return unsub;
+  }, []);
+
+  useEffect(() => {
     if (votes[voterId]) {
       setRanking({
         first: votes[voterId].first ?? null,
@@ -193,6 +229,7 @@ export default function App() {
     if (!form.title.trim()) return;
     setSaving(true);
     try {
+      const extraPhotos = parseExtraPhotos(form.extraPhotosText);
       if (editingId) {
         await withTimeout(
           updateDoc(doc(db, "sightings", editingId), {
@@ -201,6 +238,7 @@ export default function App() {
             coverUrl: form.coverUrl.trim(),
             synopsis: form.synopsis.trim(),
             photoCredit: form.photoCredit.trim(),
+            extraPhotos,
           })
         );
       } else {
@@ -212,6 +250,7 @@ export default function App() {
             coverUrl: form.coverUrl.trim(),
             synopsis: form.synopsis.trim(),
             photoCredit: form.photoCredit.trim(),
+            extraPhotos,
             order: maxOrder + 1,
             createdAt: serverTimestamp(),
           })
@@ -236,6 +275,7 @@ export default function App() {
       coverUrl: book.coverUrl || "",
       synopsis: book.synopsis || "",
       photoCredit: book.photoCredit || "",
+      extraPhotosText: extraPhotosToText(book.extraPhotos),
     });
   };
 
@@ -310,6 +350,19 @@ export default function App() {
     }
   };
 
+  const saveHonorableMentions = async (text) => {
+    setSaving(true);
+    try {
+      await withTimeout(setDoc(doc(db, "settings", "extras"), { honorableMentions: text }, { merge: true }));
+      setError("");
+    } catch (e) {
+      console.error(e);
+      setError(describeWriteError(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const pickRanking = async (bookId, slot) => {
     if (pollLocked) return; // voting's closed — results are already visible
     const next = { ...ranking };
@@ -343,6 +396,16 @@ export default function App() {
     }
   };
 
+  // A final, non-voteable "honorable mentions" card is appended to the deck
+  // whenever the manager has listed any — it shares the same swipe/index
+  // space as the real sightings, one slide past the last one.
+  const honorableMentionsList = honorableMentions
+    .split("\n")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const hasHonorableSlide = honorableMentionsList.length > 0;
+  const totalSlides = books.length + (hasHonorableSlide ? 1 : 0);
+
   // ---- swipe deck ----
   const dragState = useRef({ startX: 0, startY: 0, dx: 0, dy: 0, dragging: false });
   const [dragX, setDragX] = useState(0);
@@ -372,7 +435,7 @@ export default function App() {
       // browser's native scroll of the synopsis text stand.
     } else if (Math.abs(dx) < 6) {
       toggleFlip(index);
-    } else if (dx < -60 && index < books.length - 1) {
+    } else if (dx < -60 && index < totalSlides - 1) {
       setIndex((i) => i + 1);
     } else if (dx > 60 && index > 0) {
       setIndex((i) => i - 1);
@@ -490,6 +553,8 @@ export default function App() {
                 onGoRank={() => setView("rank")}
                 isEditor={isEditor}
                 onGoManage={() => setView("manage")}
+                honorableMentionsList={honorableMentionsList}
+                totalSlides={totalSlides}
               />
             )}
             {view === "rank" && (
@@ -515,6 +580,8 @@ export default function App() {
                 cancelEdit={cancelEdit}
                 resultsSettings={resultsSettings}
                 saveResultsSettings={saveResultsSettings}
+                honorableMentions={honorableMentions}
+                saveHonorableMentions={saveHonorableMentions}
               />
             )}
           </>
@@ -587,7 +654,23 @@ function NavButton({ icon: Icon, label, active, onClick, dim }) {
   );
 }
 
-function DeckView({ books, index, setIndex, flipped, dragX, onPointerDown, onPointerMove, endDrag, onGoRank, isEditor, onGoManage }) {
+function DeckView({
+  books,
+  index,
+  setIndex,
+  flipped,
+  dragX,
+  onPointerDown,
+  onPointerMove,
+  endDrag,
+  onGoRank,
+  isEditor,
+  onGoManage,
+  honorableMentionsList,
+  totalSlides,
+}) {
+  const [lightbox, setLightbox] = useState(null); // { url, caption } | null
+
   if (books.length === 0) {
     return (
       <div className="h-full flex flex-col items-center justify-center px-8 text-center">
@@ -607,9 +690,10 @@ function DeckView({ books, index, setIndex, flipped, dragX, onPointerDown, onPoi
     );
   }
 
-  const book = books[Math.min(index, books.length - 1)];
+  const isHonorableSlide = index === books.length && honorableMentionsList.length > 0;
+  const book = isHonorableSlide ? null : books[Math.min(index, books.length - 1)];
   const isFlipped = !!flipped[index];
-  const atEnd = index === books.length - 1;
+  const atEnd = index === totalSlides - 1;
   const synopsisRef = useRef(null);
 
   // Every time the card flips to show the synopsis — same book or not —
@@ -623,7 +707,7 @@ function DeckView({ books, index, setIndex, flipped, dragX, onPointerDown, onPoi
   return (
     <div className="h-full flex flex-col px-4 pt-2 pb-3">
       <div className="flex items-center justify-center gap-1.5 mb-2 flex-shrink-0">
-        {books.map((_, i) => (
+        {Array.from({ length: totalSlides }).map((_, i) => (
           <div
             key={i}
             className="rounded-full transition-all"
@@ -645,55 +729,96 @@ function DeckView({ books, index, setIndex, flipped, dragX, onPointerDown, onPoi
           className="relative w-full h-full rounded-2xl shadow-2xl"
           style={{ transform: `translateX(${dragX}px) rotate(${dragX / 40}deg)`, transition: dragX === 0 ? "transform 0.25s ease" : "none" }}
         >
-          <div
-            className="relative w-full h-full"
-            style={{ transformStyle: "preserve-3d", transition: "transform 0.5s cubic-bezier(.2,.8,.2,1)", transform: isFlipped ? "rotateY(180deg)" : "rotateY(0deg)" }}
-          >
-            <div className="absolute inset-0 rounded-2xl overflow-hidden bg-[#1F2E3D]" style={{ backfaceVisibility: "hidden" }}>
-              <CoverImage book={book} />
-              <div className="absolute inset-x-0 bottom-0 p-5 pt-16" style={{ background: "linear-gradient(to top, rgba(16,20,25,0.92), rgba(16,20,25,0))" }}>
-                <h2 className="text-[#F6F1E4] leading-tight" style={{ fontFamily: "'Fraunces', serif", fontSize: "1.6rem" }}>
+          {isHonorableSlide ? (
+            <div className="absolute inset-0 rounded-2xl overflow-hidden bg-[#F6F1E4] p-6 flex flex-col">
+              <h3 className="text-[#16202B] mb-1" style={{ fontFamily: "'Fraunces', serif", fontSize: "1.4rem" }}>
+                Also seen this year
+              </h3>
+              <p className="text-[#8B3A3A] text-sm mb-3" style={{ fontFamily: "Inter, sans-serif" }}>
+                Notable, but not part of the vote
+              </p>
+              <div className="flex-1 overflow-y-auto synopsis-scroll" style={{ touchAction: "pan-y" }}>
+                <ul className="space-y-2">
+                  {honorableMentionsList.map((line, i) => (
+                    <li key={i} className="text-[#3A3428] text-[0.95rem] leading-relaxed flex gap-2" style={{ fontFamily: "Inter, sans-serif" }}>
+                      <span className="text-[#C9A227] flex-shrink-0">•</span>
+                      {line}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          ) : (
+            <div
+              className="relative w-full h-full"
+              style={{ transformStyle: "preserve-3d", transition: "transform 0.5s cubic-bezier(.2,.8,.2,1)", transform: isFlipped ? "rotateY(180deg)" : "rotateY(0deg)" }}
+            >
+              <div className="absolute inset-0 rounded-2xl overflow-hidden bg-[#1F2E3D]" style={{ backfaceVisibility: "hidden" }}>
+                <CoverImage book={book} />
+                <div className="absolute inset-x-0 bottom-0 p-5 pt-16" style={{ background: "linear-gradient(to top, rgba(16,20,25,0.92), rgba(16,20,25,0))" }}>
+                  <h2 className="text-[#F6F1E4] leading-tight" style={{ fontFamily: "'Fraunces', serif", fontSize: "1.6rem" }}>
+                    {book.title}
+                  </h2>
+                  {book.author && (
+                    <p className="text-[#C9A227] text-sm mt-1" style={{ fontFamily: "Inter, sans-serif" }}>
+                      {book.author}
+                    </p>
+                  )}
+                  {book.photoCredit && (
+                    <p className="text-[#9FB0BE] text-xs mt-0.5" style={{ fontFamily: "Inter, sans-serif" }}>
+                      Photo: {book.photoCredit}
+                    </p>
+                  )}
+                  <p className="text-[#9FB0BE] text-xs mt-2" style={{ fontFamily: "Inter, sans-serif" }}>
+                    Tap to read the sighting details
+                  </p>
+                </div>
+              </div>
+
+              <div
+                className="absolute inset-0 rounded-2xl overflow-hidden bg-[#F6F1E4] p-6 flex flex-col"
+                style={{ backfaceVisibility: "hidden", transform: "rotateY(180deg)" }}
+              >
+                <h3 className="text-[#16202B] mb-1" style={{ fontFamily: "'Fraunces', serif", fontSize: "1.4rem" }}>
                   {book.title}
-                </h2>
+                </h3>
                 {book.author && (
-                  <p className="text-[#C9A227] text-sm mt-1" style={{ fontFamily: "Inter, sans-serif" }}>
+                  <p className="text-[#8B3A3A] text-sm mb-3" style={{ fontFamily: "Inter, sans-serif" }}>
                     {book.author}
                   </p>
                 )}
-                {book.photoCredit && (
-                  <p className="text-[#9FB0BE] text-xs mt-0.5" style={{ fontFamily: "Inter, sans-serif" }}>
-                    Photo: {book.photoCredit}
+                <div ref={synopsisRef} className="flex-1 overflow-y-auto synopsis-scroll" style={{ touchAction: "pan-y" }}>
+                  <p className="text-[#3A3428] text-[0.95rem] leading-relaxed" style={{ fontFamily: "Inter, sans-serif" }}>
+                    {book.synopsis || "No sighting details yet."}
                   </p>
-                )}
-                <p className="text-[#9FB0BE] text-xs mt-2" style={{ fontFamily: "Inter, sans-serif" }}>
-                  Tap to read the sighting details
-                </p>
+                  {book.extraPhotos && book.extraPhotos.length > 0 && (
+                    <div className="mt-4 pt-3 border-t border-[#E0D7BE]">
+                      <p className="text-[#7A6F55] text-xs mb-2">More photos</p>
+                      <div className="flex gap-2 overflow-x-auto pb-1">
+                        {book.extraPhotos.map((p, i) => (
+                          <button
+                            key={i}
+                            onPointerDown={(e) => e.stopPropagation()}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setLightbox(p);
+                            }}
+                            className="flex-shrink-0 w-16 h-16 rounded-lg overflow-hidden bg-[#ECE4CE] border border-[#E0D7BE]"
+                          >
+                            <img src={p.url} alt={p.caption || "Extra photo"} className="w-full h-full object-cover" draggable={false} />
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <div className="flex-shrink-0 mt-3 flex items-center justify-between">
+                  <p className="text-[#7A6F55] text-xs">Tap to flip back</p>
+                  {book.photoCredit && <p className="text-[#7A6F55] text-xs">Photo: {book.photoCredit}</p>}
+                </div>
               </div>
             </div>
-
-            <div
-              className="absolute inset-0 rounded-2xl overflow-hidden bg-[#F6F1E4] p-6 flex flex-col"
-              style={{ backfaceVisibility: "hidden", transform: "rotateY(180deg)" }}
-            >
-              <h3 className="text-[#16202B] mb-1" style={{ fontFamily: "'Fraunces', serif", fontSize: "1.4rem" }}>
-                {book.title}
-              </h3>
-              {book.author && (
-                <p className="text-[#8B3A3A] text-sm mb-3" style={{ fontFamily: "Inter, sans-serif" }}>
-                  {book.author}
-                </p>
-              )}
-              <div ref={synopsisRef} className="flex-1 overflow-y-auto synopsis-scroll" style={{ touchAction: "pan-y" }}>
-                <p className="text-[#3A3428] text-[0.95rem] leading-relaxed" style={{ fontFamily: "Inter, sans-serif" }}>
-                  {book.synopsis || "No sighting details yet."}
-                </p>
-              </div>
-              <div className="flex-shrink-0 mt-3 flex items-center justify-between">
-                <p className="text-[#7A6F55] text-xs">Tap to flip back</p>
-                {book.photoCredit && <p className="text-[#7A6F55] text-xs">Photo: {book.photoCredit}</p>}
-              </div>
-            </div>
-          </div>
+          )}
         </div>
       </div>
 
@@ -706,7 +831,7 @@ function DeckView({ books, index, setIndex, flipped, dragX, onPointerDown, onPoi
           <ChevronLeft className="w-5 h-5" />
         </button>
         <span className="text-[#C9A227] text-sm font-semibold" style={{ fontFamily: "Inter, sans-serif" }}>
-          {index + 1} of {books.length}
+          {index + 1} of {totalSlides}
         </span>
         {atEnd ? (
           <button
@@ -717,11 +842,33 @@ function DeckView({ books, index, setIndex, flipped, dragX, onPointerDown, onPoi
             Rank picks <ChevronRight className="w-4 h-4" />
           </button>
         ) : (
-          <button onClick={() => setIndex((i) => Math.min(books.length - 1, i + 1))} className="w-10 h-10 rounded-full bg-[#1F2E3D] text-[#EDE6D6] flex items-center justify-center">
+          <button onClick={() => setIndex((i) => Math.min(totalSlides - 1, i + 1))} className="w-10 h-10 rounded-full bg-[#1F2E3D] text-[#EDE6D6] flex items-center justify-center">
             <ChevronRight className="w-5 h-5" />
           </button>
         )}
       </div>
+
+      {lightbox && (
+        <div className="fixed inset-0 bg-black/90 flex flex-col items-center justify-center px-4 z-50" onClick={() => setLightbox(null)}>
+          <img src={lightbox.url} alt={lightbox.caption || "Photo"} className="max-w-full max-h-[75vh] object-contain rounded-lg" />
+          {lightbox.caption && (
+            <p className="text-[#F6F1E4] text-sm mt-3" style={{ fontFamily: "Inter, sans-serif" }}>
+              {lightbox.caption}
+            </p>
+          )}
+          {lightbox.credit && (
+            <p className="text-[#9FB0BE] text-xs mt-1" style={{ fontFamily: "Inter, sans-serif" }}>
+              Photo: {lightbox.credit}
+            </p>
+          )}
+          <button
+            onClick={() => setLightbox(null)}
+            className="mt-4 flex items-center gap-1.5 text-[#9FB0BE] text-sm border border-[#33465A] rounded-full px-4 py-1.5"
+          >
+            <X className="w-3.5 h-3.5" /> Close
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -947,13 +1094,20 @@ function ManageView({
   cancelEdit,
   resultsSettings,
   saveResultsSettings,
+  honorableMentions,
+  saveHonorableMentions,
 }) {
   const [pendingDelete, setPendingDelete] = useState(null);
   const [revealAtInput, setRevealAtInput] = useState(resultsSettings.revealAt || "");
+  const [mentionsInput, setMentionsInput] = useState(honorableMentions);
 
   useEffect(() => {
     setRevealAtInput(resultsSettings.revealAt || "");
   }, [resultsSettings.revealAt]);
+
+  useEffect(() => {
+    setMentionsInput(honorableMentions);
+  }, [honorableMentions]);
 
   const revealTargetMs = resultsSettings.revealAt ? new Date(resultsSettings.revealAt).getTime() : null;
   const timeReached = revealTargetMs && Date.now() >= revealTargetMs;
@@ -1020,6 +1174,27 @@ function ManageView({
         </div>
       </div>
 
+      <div className="bg-[#1F2E3D] border border-[#33465A] rounded-xl p-4 mb-5">
+        <h3 className="text-[#F6F1E4] text-sm font-semibold mb-1">Also seen this year</h3>
+        <p className="text-[#9FB0BE] text-xs mb-3">
+          Worth a mention but not part of the vote — one line each. Shown as a final card at the end of the deck, after
+          the last sighting. Leave empty to skip this card entirely.
+        </p>
+        <textarea
+          value={mentionsInput}
+          onChange={(e) => setMentionsInput(e.target.value)}
+          placeholder={"Snowy Owl — Green Lane Reservoir\nAmerican White Pelican — Peace Valley"}
+          rows={4}
+          className="w-full bg-[#16202B] text-[#F6F1E4] placeholder-[#6B7C8C] border border-[#33465A] rounded-lg px-3 py-2 text-sm outline-none focus:border-[#C9A227] resize-none mb-2"
+        />
+        <button
+          onClick={() => saveHonorableMentions(mentionsInput)}
+          className="w-full border border-[#33465A] text-[#9FB0BE] rounded-lg py-2 text-xs"
+        >
+          Save list
+        </button>
+      </div>
+
       <div className={`bg-[#1F2E3D] border rounded-xl p-4 mb-5 ${editingId ? "border-[#C9A227]" : "border-[#33465A]"}`}>
         {editingId && (
           <div className="flex items-center justify-between mb-3">
@@ -1063,6 +1238,21 @@ function ManageView({
             rows={4}
             className="w-full bg-[#16202B] text-[#F6F1E4] placeholder-[#6B7C8C] border border-[#33465A] rounded-lg px-3 py-2 text-sm outline-none focus:border-[#C9A227] resize-none"
           />
+          <div>
+            <label className="text-[#6B7C8C] text-xs block mb-1">
+              Extra photos (optional) — spectrograms, flight shots, etc. One per line: URL, URL | caption, or URL |
+              caption | photo credit
+            </label>
+            <textarea
+              value={form.extraPhotosText}
+              onChange={(e) => setForm({ ...form, extraPhotosText: e.target.value })}
+              placeholder={
+                "https://.../spectrogram.png | Call spectrogram | J. Smith\nhttps://.../flight-shot.jpg | In flight | J. Smith"
+              }
+              rows={3}
+              className="w-full bg-[#16202B] text-[#F6F1E4] placeholder-[#6B7C8C] border border-[#33465A] rounded-lg px-3 py-2 text-sm outline-none focus:border-[#C9A227] resize-none"
+            />
+          </div>
           <button
             onClick={saveBook}
             disabled={!form.title.trim() || saving}
