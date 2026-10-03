@@ -132,8 +132,14 @@ export default function App() {
 
   const [view, setView] = useState("deck"); // deck | rank | results | manage
   const [index, setIndex] = useState(0);
-  const [flipped, setFlipped] = useState({});
+  const [isFlipped, setIsFlipped] = useState(false);
   const [ranking, setRanking] = useState({ first: null, second: null, third: null });
+
+  // A card always comes back showing its photo, never wherever you left it —
+  // so flipping resets the moment you swipe (or jump) to a different one.
+  useEffect(() => {
+    setIsFlipped(false);
+  }, [index]);
 
   const [form, setForm] = useState(emptyForm);
   const [editingId, setEditingId] = useState(null); // sighting id being edited, or null when adding new
@@ -434,7 +440,7 @@ export default function App() {
       // not a tap, not a horizontal swipe, so leave it alone and let the
       // browser's native scroll of the synopsis text stand.
     } else if (Math.abs(dx) < 6) {
-      toggleFlip(index);
+      setIsFlipped((f) => !f);
     } else if (dx < -60 && index < totalSlides - 1) {
       setIndex((i) => i + 1);
     } else if (dx > 60 && index > 0) {
@@ -442,8 +448,6 @@ export default function App() {
     }
     setDragX(0);
   };
-
-  const toggleFlip = (i) => setFlipped((f) => ({ ...f, [i]: !f[i] }));
 
   const voteCounts = books.reduce((acc, b) => {
     acc[b.id] = { first: 0, second: 0, third: 0 };
@@ -545,7 +549,7 @@ export default function App() {
                 books={books}
                 index={index}
                 setIndex={setIndex}
-                flipped={flipped}
+                isFlipped={isFlipped}
                 dragX={dragX}
                 onPointerDown={onPointerDown}
                 onPointerMove={onPointerMove}
@@ -589,8 +593,17 @@ export default function App() {
       </main>
 
       <nav className="flex-shrink-0 border-t border-[#2A3B4C] bg-[#16202B] px-2 py-1.5 flex items-center justify-around" style={{ fontFamily: "Inter, sans-serif" }}>
-        <NavButton icon={Layers} label="Browse" active={view === "deck"} onClick={() => setView("deck")} />
-        <NavButton icon={pollLocked ? Lock : ListChecks} label="My picks" active={view === "rank"} onClick={() => setView("rank")} />
+        <NavButton
+          icon={Layers}
+          label="Browse"
+          active={view === "deck"}
+          onClick={() => {
+            setView("deck");
+            setIndex(0);
+            setIsFlipped(false);
+          }}
+        />
+        <NavButton icon={pollLocked ? Lock : ListChecks} label="Vote Here" active={view === "rank"} onClick={() => setView("rank")} />
         <NavButton icon={BarChart3} label="Results" active={view === "results"} onClick={() => setView("results")} />
         <NavButton
           icon={Settings}
@@ -658,7 +671,7 @@ function DeckView({
   books,
   index,
   setIndex,
-  flipped,
+  isFlipped,
   dragX,
   onPointerDown,
   onPointerMove,
@@ -692,7 +705,6 @@ function DeckView({
 
   const isHonorableSlide = index === books.length && honorableMentionsList.length > 0;
   const book = isHonorableSlide ? null : books[Math.min(index, books.length - 1)];
-  const isFlipped = !!flipped[index];
   const atEnd = index === totalSlides - 1;
   const synopsisRef = useRef(null);
 
